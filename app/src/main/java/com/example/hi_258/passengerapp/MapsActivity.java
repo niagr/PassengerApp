@@ -4,12 +4,14 @@ import android.support.v4.app.FragmentActivity;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
+import android.widget.AdapterView;
+import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import com.android.volley.AuthFailureError;
 import com.android.volley.Request;
 import com.android.volley.RequestQueue;
 import com.android.volley.Response;
@@ -34,9 +36,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.sql.Time;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Collections;
 import java.util.List;
-import java.util.Map;
+import android.os.Handler;
 
 import static java.lang.Math.abs;
 
@@ -48,12 +50,19 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     private int currMarkerCoordIndex = 0;
 
     private Button mNextButton, mTrackButton;
-    private TextView mLabelTime;
-    private TextView mLabelCoords;
+    private TextView mTxtEta;
     private EditText mTxtRouteId;
 
-    private Marker mMarker;
+    private SupportMapFragment mMapFragment;
 
+    private Spinner mRoutesDropDown, mStopsDropDown;
+
+    private List<Location> mRouteCoords = new ArrayList<>();
+    private List<Location> mStops = new ArrayList<>();
+
+    private Location mSelectedStop;
+
+    private Marker mBusMarker, mStopMarker;
 
 
     @Override
@@ -61,7 +70,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_maps);
         // Obtain the SupportMapFragment and get notified when the map is ready to be used.
-        SupportMapFragment mapFragment = (SupportMapFragment) getSupportFragmentManager()
+        mMapFragment = (SupportMapFragment) getSupportFragmentManager()
                 .findFragmentById(R.id.map);
         List<Location> coordList = getMockCoordinates();
         if (coordList != null) {
@@ -69,36 +78,163 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         } else {
             Log.d("nish", "Could not get mock coordinates");
         }
-        mapFragment.getMapAsync(this);
 
-        mLabelCoords = (TextView)findViewById(R.id.txtCoordinates);
-        mLabelTime = (TextView)findViewById(R.id.txtTime);
-        mTxtRouteId = (EditText)findViewById(R.id.txtRouteId);
+        mRoutesDropDown = (Spinner)findViewById(R.id.routesDropDown);
+        mStopsDropDown = (Spinner)findViewById(R.id.stopsDropDown);
 
-        mNextButton = (Button)findViewById(R.id.nextButton);
-        mNextButton.setOnClickListener(new View.OnClickListener() {
+        mTxtEta = (TextView)findViewById(R.id.txtEta);
+
+        getRoutes();
+        mRoutesDropDown.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
-            public void onClick(View v) {
-                Location loc = mMockCoords.get(++currMarkerCoordIndex);
-                mMarker.setPosition(loc.coords);
-                Log.d("nish", loc.time.toString());
-                mLabelTime.setText(loc.time.toString());
-                mLabelCoords.setText(loc.coords.latitude + " - " + loc.coords.longitude);
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                Log.d("nish","BOOBS");
+                Log.d("nish", "Selected " + parent.getItemAtPosition(position).toString());
+                int route_id = Integer.parseInt(parent.getItemAtPosition(position).toString());
+                getRouteCoords(route_id);
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+
             }
         });
 
-        mTrackButton = (Button)findViewById(R.id.trackButton);
-        mTrackButton.setOnClickListener(new View.OnClickListener() {
+        mStopsDropDown.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             @Override
-            public void onClick(View v) {
-                String routeId = mTxtRouteId.getText().toString();
-                if (routeId.length() == 0) {
-                    Toast.makeText(MapsActivity.this, "Please enter route ID", Toast.LENGTH_LONG);
-                    return;
+            public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                mSelectedStop = (Location) parent.getItemAtPosition(position);
+                Log.d("nish", mSelectedStop.toString());
+                if (mStopMarker == null) {
+                    mStopMarker = mMap.addMarker(new MarkerOptions().position(mSelectedStop.coords));
+                } else {
+                    mStopMarker.setPosition(mSelectedStop.coords);
                 }
-                getCurrentCoords(routeId);
+                mStopMarker.setPosition(mSelectedStop.coords);
+                getAndDisplayEta();
+            }
+
+            @Override
+            public void onNothingSelected(AdapterView<?> parent) {
+
             }
         });
+    }
+
+    void getAndDisplayEta () {
+        LatLng origin = mBusMarker.getPosition();
+        LatLng destination = mStopMarker.getPosition();
+        RequestQueue queue = Volley.newRequestQueue(this);
+        StringRequest strReq = new StringRequest(
+                Request.Method.GET,
+                String.format("https://maps.googleapis.com/maps/api/distancematrix/json?origins=%s&destinations=%s",
+                        origin.latitude + "," + origin.longitude, destination.latitude + "," + destination.longitude),
+                new Response.Listener<String>() {
+                    @Override
+                    public void onResponse(String response) {
+                        Log.d("nish", "Got distance matric response: " + response);
+                        try {
+                            JSONObject jsonObj = new JSONObject(response);
+                            String durationText = jsonObj.getJSONArray("rows")
+                                    .getJSONObject(0)
+                                    .getJSONArray("elements")
+                                    .getJSONObject(0)
+                                    .getJSONObject("duration")
+                                    .getString("text");
+                            Log.d("nish", "ETA: " + durationText);
+                            mTxtEta.setText(durationText);
+                        } catch (JSONException e) {
+                            Log.d("nish", "Could not get distance matrix response: " + e.getMessage());
+                            return;
+                        }
+                    }
+                },
+                new Response.ErrorListener() {
+                    @Override
+                    public void onErrorResponse(VolleyError error) {
+                        Log.d("nish", "Failed to get current coordinates" + error.toString());
+                    }
+                }
+        ) ;
+        Log.d("nish", "Making request: " + strReq.toString());
+        queue.add(strReq);
+    }
+
+
+    void getRoutes () {
+        RequestQueue queue = Volley.newRequestQueue(this);
+        StringRequest strReq = new StringRequest(
+                Request.Method.GET,
+                "http://ec2-54-202-217-53.us-west-2.compute.amazonaws.com:8080/bus_routes",
+                new Response.Listener<String>() {
+                    @Override
+                    public void onResponse(String response) {
+                        Log.d("nish", "Got current coordinates" + response);
+                        try {
+                            JSONArray jsonArr = new JSONArray(response);
+                            List<String> route_ids = new ArrayList<>();
+                            for (int i = 0; i < jsonArr.length(); i++) {
+                                JSONObject route = jsonArr.getJSONObject(i);
+                                int route_id = route.getInt("route_id");
+                                route_ids.add(String.valueOf(route_id));
+                            }
+                            mRoutesDropDown.setAdapter(new ArrayAdapter<String>(MapsActivity.this, R.layout.route_item, route_ids));
+                        } catch (JSONException e) {
+                            Log.d("nish", "Couldl not parse JSON");
+                            return;
+                        }
+                    }
+                },
+                new Response.ErrorListener() {
+                    @Override
+                    public void onErrorResponse(VolleyError error) {
+                        Log.d("nish", "Failed to get current coordinates" + error.toString());
+                    }
+                }
+        ) ;
+        Log.d("nish", "Making request: " + strReq.toString());
+        queue.add(strReq);
+    }
+
+    private void getRouteCoords (int route_id) {
+        RequestQueue queue = Volley.newRequestQueue(this);
+        StringRequest strReq = new StringRequest(
+                Request.Method.GET,
+                String.format("http://ec2-54-202-217-53.us-west-2.compute.amazonaws.com:8080/route_coords?route_id=%s", route_id),
+                new Response.Listener<String>() {
+                    @Override
+                    public void onResponse(String response) {
+                        Log.d("nish", "Got current coordinates" + response);
+                        try {
+                            JSONArray jsonArr = new JSONArray(response);
+                            for (int i = 0; i < jsonArr.length(); i++) {
+                                JSONObject route = jsonArr.getJSONObject(i);
+                                int route_id = route.getInt("route_id");
+                                double latitude = Double.parseDouble(route.getString("latitude"));
+                                double longitude = Double.parseDouble(route.getString("longitude"));
+                                Location loc = new Location(new LatLng(latitude, longitude), Time.valueOf("12:12:12"));
+                                mRouteCoords.add(loc);
+                                boolean isStop = route.getBoolean("is_stop");
+                                if (isStop) mStops.add(loc);
+                            }
+                            Log.d("nish", mRouteCoords.toString());
+                            mStopsDropDown.setAdapter(new ArrayAdapter<>(MapsActivity.this, R.layout.route_item, mStops));
+                            mMapFragment.getMapAsync(MapsActivity.this);
+                        } catch (JSONException e) {
+                            Log.d("nish", "Couldl not parse JSON");
+                            return;
+                        }
+                    }
+                },
+                new Response.ErrorListener() {
+                    @Override
+                    public void onErrorResponse(VolleyError error) {
+                        Log.d("nish", "Failed to get current coordinates" + error.toString());
+                    }
+                }
+        ) ;
+        Log.d("nish", "Making request: " + strReq.toString());
+        queue.add(strReq);
     }
 
 
@@ -117,7 +253,8 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                             JSONObject jsonObj = jsonArr.getJSONObject(0);
                             double latitude = Double.parseDouble(jsonObj.getString("latitude"));
                             double longitude = Double.parseDouble(jsonObj.getString("longitude"));
-                            mMarker.setPosition(new LatLng(latitude, longitude));
+                            mBusMarker.setPosition(new LatLng(latitude, longitude));
+                            Log.d("nish", "Current pos: " + mBusMarker.getPosition());
                         } catch (JSONException e) {
                             Log.d("nish", "Couldl not parse JSON");
                             return;
@@ -131,16 +268,17 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                     }
                 }
         ) ;
-//        {
-//            @Override
-//            protected Map<String, String> getParams() throws AuthFailureError {
-//                Map<String, String> params = new HashMap<>();
-//                params.put("route_id", routeId);
-//                return params;
-//            }
-//        };
         Log.d("nish", "Making request: " + strReq.toString());
         queue.add(strReq);
+    }
+
+
+    void drawPath () {
+        final List<LatLng> coords = new ArrayList<>();
+        Collections.reverse(mRouteCoords);
+        for (Location loc : removeAnomalousCoordinates(mRouteCoords)) coords.add(loc.coords);
+        PolylineOptions path = new PolylineOptions().addAll(coords);
+        mMap.addPolyline(path);
     }
 
 
@@ -156,15 +294,22 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     @Override
     public void onMapReady(GoogleMap googleMap) {
         mMap = googleMap;
-        final List<LatLng> coords = new ArrayList<>();
-        for (Location loc : mMockCoords) coords.add(loc.coords);
-        PolylineOptions path = new PolylineOptions().addAll(coords);
-        mMarker = mMap.addMarker(new MarkerOptions().position(mMockCoords.get(currMarkerCoordIndex).coords));
-        mMarker.setIcon(BitmapDescriptorFactory.fromResource(R.drawable.bus_small));
-//        mMap.addMarker(new MarkerOptions().position(mMockCoords.get(1)));
-//        mMap.addMarker(new MarkerOptions().position(mMockCoords.get(2)));
-        mMap.addPolyline(path);
+        drawPath();
+        mBusMarker = mMap.addMarker(new MarkerOptions().position(mRouteCoords.get(currMarkerCoordIndex).coords));
+        mBusMarker.setIcon(BitmapDescriptorFactory.fromResource(R.drawable.bus_small));
         mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(mMockCoords.get(0).coords, 12));
+        getCurrentCoords((String) mRoutesDropDown.getSelectedItem());
+
+        final Handler handler = new Handler();
+        handler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                getCurrentCoords((String) mRoutesDropDown.getSelectedItem());
+                getAndDisplayEta();
+                Log.d("nish", "Called");
+                handler.postDelayed(this, 5000);
+            }
+        }, 5000);
     }
 
     // Returns null if fails

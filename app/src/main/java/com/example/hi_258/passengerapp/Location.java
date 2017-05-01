@@ -15,4 +15,8 @@ public class Location {
         this.coords = coords;
         this.time = time;
     }
+    @Override
+    public String toString() {
+        return this.coords.toString();
+    }
 }
