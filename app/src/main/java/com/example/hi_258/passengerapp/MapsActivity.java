@@ -5,17 +5,26 @@ import android.os.Bundle;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
+import android.widget.EditText;
+import android.widget.TextView;
+import android.widget.Toast;
 
-import com.google.android.gms.awareness.fence.LocationFence;
+import com.android.volley.AuthFailureError;
+import com.android.volley.Request;
+import com.android.volley.RequestQueue;
+import com.android.volley.Response;
+import com.android.volley.VolleyError;
+import com.android.volley.toolbox.StringRequest;
+import com.android.volley.toolbox.Volley;
 import com.google.android.gms.maps.CameraUpdateFactory;
 import com.google.android.gms.maps.GoogleMap;
 import com.google.android.gms.maps.OnMapReadyCallback;
 import com.google.android.gms.maps.SupportMapFragment;
+import com.google.android.gms.maps.model.BitmapDescriptorFactory;
 import com.google.android.gms.maps.model.LatLng;
 import com.google.android.gms.maps.model.Marker;
 import com.google.android.gms.maps.model.MarkerOptions;
 import com.google.android.gms.maps.model.PolylineOptions;
-import com.google.android.gms.maps.model.RoundCap;
 
 import org.json.JSONArray;
 import org.json.JSONException;
@@ -23,8 +32,11 @@ import org.json.JSONObject;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.sql.Time;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static java.lang.Math.abs;
 
@@ -32,10 +44,14 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
 
     private GoogleMap mMap;
 
-    private List<LatLng> mMockCoords;
+    private List<Location> mMockCoords;
     private int currMarkerCoordIndex = 0;
 
-    private Button mNextButton;
+    private Button mNextButton, mTrackButton;
+    private TextView mLabelTime;
+    private TextView mLabelCoords;
+    private EditText mTxtRouteId;
+
     private Marker mMarker;
 
 
@@ -47,7 +63,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         // Obtain the SupportMapFragment and get notified when the map is ready to be used.
         SupportMapFragment mapFragment = (SupportMapFragment) getSupportFragmentManager()
                 .findFragmentById(R.id.map);
-        List<LatLng> coordList = getMockCoordinates();
+        List<Location> coordList = getMockCoordinates();
         if (coordList != null) {
             mMockCoords = coordList;
         } else {
@@ -55,13 +71,76 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         }
         mapFragment.getMapAsync(this);
 
+        mLabelCoords = (TextView)findViewById(R.id.txtCoordinates);
+        mLabelTime = (TextView)findViewById(R.id.txtTime);
+        mTxtRouteId = (EditText)findViewById(R.id.txtRouteId);
+
         mNextButton = (Button)findViewById(R.id.nextButton);
         mNextButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                mMarker.setPosition(mMockCoords.get(++currMarkerCoordIndex));
+                Location loc = mMockCoords.get(++currMarkerCoordIndex);
+                mMarker.setPosition(loc.coords);
+                Log.d("nish", loc.time.toString());
+                mLabelTime.setText(loc.time.toString());
+                mLabelCoords.setText(loc.coords.latitude + " - " + loc.coords.longitude);
             }
         });
+
+        mTrackButton = (Button)findViewById(R.id.trackButton);
+        mTrackButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                String routeId = mTxtRouteId.getText().toString();
+                if (routeId.length() == 0) {
+                    Toast.makeText(MapsActivity.this, "Please enter route ID", Toast.LENGTH_LONG);
+                    return;
+                }
+                getCurrentCoords(routeId);
+            }
+        });
+    }
+
+
+    void getCurrentCoords (final String routeId) {
+        RequestQueue queue = Volley.newRequestQueue(this);
+
+        StringRequest strReq = new StringRequest(
+                Request.Method.GET,
+                String.format("http://ec2-54-202-217-53.us-west-2.compute.amazonaws.com:8080/current_coordinates/?route_id=%s", routeId),
+                new Response.Listener<String>() {
+                    @Override
+                    public void onResponse(String response) {
+                        Log.d("nish", "Got current coordinates" + response);
+                        try {
+                            JSONArray jsonArr = new JSONArray(response);
+                            JSONObject jsonObj = jsonArr.getJSONObject(0);
+                            double latitude = Double.parseDouble(jsonObj.getString("latitude"));
+                            double longitude = Double.parseDouble(jsonObj.getString("longitude"));
+                            mMarker.setPosition(new LatLng(latitude, longitude));
+                        } catch (JSONException e) {
+                            Log.d("nish", "Couldl not parse JSON");
+                            return;
+                        }
+                    }
+                },
+                new Response.ErrorListener() {
+                    @Override
+                    public void onErrorResponse(VolleyError error) {
+                        Log.d("nish", "Failed to get current coordinates" + error.toString());
+                    }
+                }
+        ) ;
+//        {
+//            @Override
+//            protected Map<String, String> getParams() throws AuthFailureError {
+//                Map<String, String> params = new HashMap<>();
+//                params.put("route_id", routeId);
+//                return params;
+//            }
+//        };
+        Log.d("nish", "Making request: " + strReq.toString());
+        queue.add(strReq);
     }
 
 
@@ -77,16 +156,19 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     @Override
     public void onMapReady(GoogleMap googleMap) {
         mMap = googleMap;
-        PolylineOptions path = new PolylineOptions().addAll(mMockCoords);
-        mMarker = mMap.addMarker(new MarkerOptions().position(mMockCoords.get(currMarkerCoordIndex)));
+        final List<LatLng> coords = new ArrayList<>();
+        for (Location loc : mMockCoords) coords.add(loc.coords);
+        PolylineOptions path = new PolylineOptions().addAll(coords);
+        mMarker = mMap.addMarker(new MarkerOptions().position(mMockCoords.get(currMarkerCoordIndex).coords));
+        mMarker.setIcon(BitmapDescriptorFactory.fromResource(R.drawable.bus_small));
 //        mMap.addMarker(new MarkerOptions().position(mMockCoords.get(1)));
 //        mMap.addMarker(new MarkerOptions().position(mMockCoords.get(2)));
         mMap.addPolyline(path);
-        mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(mMockCoords.get(0), 12));
+        mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(mMockCoords.get(0).coords, 12));
     }
 
     // Returns null if fails
-    List<LatLng> getMockCoordinates () {
+    List<Location> getMockCoordinates () {
         InputStream is = getResources().openRawResource(R.raw.coordinates);
         byte[] data;
         try {
@@ -101,16 +183,17 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         String jsonStr = new String(data);
 
         JSONArray jsonArr;
-        List<LatLng> coordList = new ArrayList<LatLng>();
+        List<Location> locationList = new ArrayList<Location>();
         try {
             jsonArr = new JSONArray(jsonStr);
             for (int i = 0; i < jsonArr.length(); i++) {
                 JSONArray coords = jsonArr.getJSONArray(i);
                 double latitude = Double.parseDouble(coords.getString(0));
                 double longitude = Double.parseDouble(coords.getString(1));
-                coordList.add(new LatLng(latitude, longitude));
+                Time time = Time.valueOf("12:12:12");  // Time.valueOf(coords.getString(2));
+                locationList.add(new Location(new LatLng(latitude, longitude), time));
             }
-            return removeAnomalousCoordinates(coordList);
+            return removeAnomalousCoordinates(locationList);
         } catch (JSONException | NumberFormatException e) {
             Log.d("nish", "Could not parse JSON object: " + e.getMessage());
             return null;
@@ -120,16 +203,17 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     /**
      * Get rid of anomalous location
      */
-    List<LatLng> removeAnomalousCoordinates (List<LatLng> coordList) {
-        List<LatLng> filteredCoordList = new ArrayList<LatLng>();
-        LatLng lastCoord = coordList.get(0);
+    List<Location> removeAnomalousCoordinates (List<Location> locationList) {
+        List<Location> filteredCoordList = new ArrayList<Location>();
+        LatLng lastCoord = locationList.get(0).coords;
         int l = 0;
-        for (int i = 1; i < coordList.size(); i++) {
-            LatLng currCoord = coordList.get(i);
+        for (int i = 1; i < locationList.size(); i++) {
+            Location currLocation = locationList.get(i);
+            LatLng currCoord = currLocation.coords;
             double dist = distance(lastCoord.latitude, currCoord.latitude, lastCoord.longitude, lastCoord.longitude, 0, 0);
             Log.d("nish", i + " " + l + " DIST: " + dist + " " + lastCoord.toString() + " - " + currCoord.toString());
-            if (dist < 500) {
-                filteredCoordList.add(currCoord);
+            if (dist < 800) {
+                filteredCoordList.add(currLocation);
                 lastCoord = currCoord;
                 l = i;
             }
